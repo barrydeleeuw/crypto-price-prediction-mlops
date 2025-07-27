@@ -1,6 +1,13 @@
 """
 Model training and evaluation for cryptocurrency price prediction.
-Comprehensive model training with cross-validation and evaluation metrics.
+
+This module provides comprehensive model training capabilities including:
+- Model creation and training
+- Cross-validation with time series splits
+- Hyperparameter tuning with grid search
+- Model evaluation and metrics calculation
+- Model persistence and loading
+- Feature importance analysis
 """
 
 import pandas as pd
@@ -21,12 +28,23 @@ from ..utils.config import (
 )
 from .features import get_feature_importance
 
+# Configure logging
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# MODEL TRAINER CLASS
+# =============================================================================
 
 class ModelTrainer:
     """
     Model trainer for cryptocurrency price prediction.
-    Handles model training, hyperparameter tuning, and evaluation.
+    
+    This class handles the complete model training workflow including:
+    - Model creation and configuration
+    - Training with optional cross-validation
+    - Hyperparameter tuning with grid search
+    - Model evaluation and metrics calculation
+    - Feature importance analysis
     """
     
     def __init__(self, 
@@ -38,7 +56,7 @@ class ModelTrainer:
         Initialize the model trainer.
         
         Args:
-            model_type: Type of model to train
+            model_type: Type of model to train ('random_forest' supported)
             random_state: Random state for reproducibility
             n_estimators: Number of estimators for Random Forest
             max_depth: Maximum depth for Random Forest
@@ -48,6 +66,7 @@ class ModelTrainer:
         self.n_estimators = n_estimators or N_ESTIMATORS
         self.max_depth = max_depth or MAX_DEPTH
         
+        # Model and training state
         self.model = None
         self.best_params = None
         self.cv_scores = {}
@@ -55,10 +74,13 @@ class ModelTrainer:
         
     def create_model(self) -> RandomForestRegressor:
         """
-        Create the model instance.
+        Create the model instance with specified parameters.
         
         Returns:
-            Model instance
+            Configured model instance
+            
+        Raises:
+            ValueError: If model_type is not supported
         """
         if self.model_type == 'random_forest':
             model = RandomForestRegressor(
@@ -67,7 +89,7 @@ class ModelTrainer:
                 min_samples_split=MIN_SAMPLES_SPLIT,
                 min_samples_leaf=MIN_SAMPLES_LEAF,
                 random_state=self.random_state,
-                n_jobs=-1
+                n_jobs=-1  # Use all available CPU cores
             )
         else:
             raise ValueError(f"Unsupported model type: {self.model_type}")
@@ -87,71 +109,95 @@ class ModelTrainer:
         Args:
             X_train: Training features
             y_train: Training targets
-            X_val: Validation features
-            y_val: Validation targets
+            X_val: Validation features (optional)
+            y_val: Validation targets (optional)
             perform_cv: Whether to perform cross-validation
             perform_grid_search: Whether to perform hyperparameter tuning
             
         Returns:
-            Dictionary with training results
+            Dictionary with comprehensive training results
         """
-        logger.info("Starting model training")
+        logger.info("Starting model training process")
         
-        # Create model
+        # =====================================================================
+        # STEP 1: CREATE MODEL
+        # =====================================================================
+        
         self.model = self.create_model()
+        logger.info(f"Created {self.model_type} model with parameters: {self.model.get_params()}")
         
-        # Perform hyperparameter tuning if requested
+        # =====================================================================
+        # STEP 2: HYPERPARAMETER TUNING (OPTIONAL)
+        # =====================================================================
+        
         if perform_grid_search:
-            logger.info("Performing hyperparameter tuning")
-            self.model, self.best_params = self._perform_grid_search(X_train, y_train)
+            logger.info("Performing hyperparameter tuning with grid search")
+            best_model, best_params = self._perform_grid_search(X_train, y_train)
+            self.model = best_model
+            self.best_params = best_params
+            logger.info(f"Best parameters found: {best_params}")
         
-        # Perform cross-validation if requested
+        # =====================================================================
+        # STEP 3: CROSS-VALIDATION (OPTIONAL)
+        # =====================================================================
+        
         if perform_cv:
             logger.info("Performing cross-validation")
             self.cv_scores = self._perform_cross_validation(X_train, y_train)
+            logger.info(f"Cross-validation scores: {self.cv_scores}")
         
-        # Train final model
-        logger.info("Training final model")
+        # =====================================================================
+        # STEP 4: MODEL TRAINING
+        # =====================================================================
+        
+        logger.info("Training final model on full training set")
         self.model.fit(X_train, y_train)
         
-        # Calculate feature importance
+        # =====================================================================
+        # STEP 5: FEATURE IMPORTANCE
+        # =====================================================================
+        
         if hasattr(self.model, 'feature_importances_'):
-            self.feature_importance = pd.DataFrame({
-                'feature': X_train.columns,
-                'importance': self.model.feature_importances_
-            }).sort_values('importance', ascending=False)
+            self.feature_importance = get_feature_importance(self.model, X_train.columns)
+            logger.info("Feature importance calculated")
         
-        # Evaluate on validation set if provided
-        val_metrics = {}
+        # =====================================================================
+        # STEP 6: VALIDATION EVALUATION (IF PROVIDED)
+        # =====================================================================
+        
+        validation_results = {}
         if X_val is not None and y_val is not None:
-            logger.info("Evaluating on validation set")
-            val_metrics = self._evaluate_model(X_val, y_val, 'validation')
+            logger.info("Evaluating model on validation set")
+            validation_results = self._evaluate_model(X_val, y_val, 'validation')
         
-        # Create training summary
+        # =====================================================================
+        # STEP 7: CREATE TRAINING SUMMARY
+        # =====================================================================
+        
         training_summary = {
             'model_type': self.model_type,
             'model_params': self.model.get_params(),
             'best_params': self.best_params,
             'cv_scores': self.cv_scores,
-            'val_metrics': val_metrics,
+            'validation_results': validation_results,
             'feature_importance': self.feature_importance.to_dict('records') if self.feature_importance is not None else None
         }
         
-        logger.info("Model training complete")
+        logger.info("Model training completed successfully")
         return training_summary
     
-    def _perform_grid_search(self, X_train: pd.DataFrame, y_train: pd.Series) -> Tuple:
+    def _perform_grid_search(self, X_train: pd.DataFrame, y_train: pd.Series) -> Tuple[RandomForestRegressor, Dict]:
         """
-        Perform hyperparameter tuning using grid search.
+        Perform hyperparameter tuning using grid search with time series cross-validation.
         
         Args:
             X_train: Training features
             y_train: Training targets
             
         Returns:
-            Tuple of (best_model, best_params)
+            Tuple of (best model, best parameters)
         """
-        # Define parameter grid
+        # Define parameter grid for Random Forest
         param_grid = {
             'n_estimators': [50, 100, 200],
             'max_depth': [5, 10, 15, None],
@@ -170,15 +216,12 @@ class ModelTrainer:
             estimator=base_model,
             param_grid=param_grid,
             cv=tscv,
-            scoring='neg_mean_absolute_error',
+            scoring='neg_mean_squared_error',
             n_jobs=-1,
             verbose=1
         )
         
         grid_search.fit(X_train, y_train)
-        
-        logger.info(f"Best parameters: {grid_search.best_params_}")
-        logger.info(f"Best CV score: {-grid_search.best_score_:.4f}")
         
         return grid_search.best_estimator_, grid_search.best_params_
     
@@ -191,61 +234,42 @@ class ModelTrainer:
             y_train: Training targets
             
         Returns:
-            Dictionary with CV scores
+            Dictionary with cross-validation scores
         """
         # Create time series cross-validation
         tscv = TimeSeriesSplit(n_splits=TIME_SERIES_SPLITS)
         
         # Perform cross-validation with multiple metrics
-        cv_scores = {}
+        cv_results = {}
         
-        # MAE
-        mae_scores = cross_val_score(
-            self.model, X_train, y_train, 
-            cv=tscv, scoring='neg_mean_absolute_error'
-        )
-        cv_scores['mae'] = {
-            'scores': -mae_scores.tolist(),
-            'mean': -mae_scores.mean(),
-            'std': mae_scores.std()
-        }
+        # Mean Squared Error
+        mse_scores = cross_val_score(self.model, X_train, y_train, cv=tscv, scoring='neg_mean_squared_error')
+        cv_results['mse'] = -mse_scores  # Convert back to positive
+        cv_results['mse_mean'] = -mse_scores.mean()
+        cv_results['mse_std'] = mse_scores.std()
         
-        # RMSE
-        rmse_scores = cross_val_score(
-            self.model, X_train, y_train,
-            cv=tscv, scoring='neg_mean_squared_error'
-        )
-        cv_scores['rmse'] = {
-            'scores': np.sqrt(-rmse_scores).tolist(),
-            'mean': np.sqrt(-rmse_scores.mean()),
-            'std': np.sqrt(-rmse_scores).std()
-        }
+        # Mean Absolute Error
+        mae_scores = cross_val_score(self.model, X_train, y_train, cv=tscv, scoring='neg_mean_absolute_error')
+        cv_results['mae'] = -mae_scores  # Convert back to positive
+        cv_results['mae_mean'] = -mae_scores.mean()
+        cv_results['mae_std'] = mae_scores.std()
         
-        # R²
-        r2_scores = cross_val_score(
-            self.model, X_train, y_train,
-            cv=tscv, scoring='r2'
-        )
-        cv_scores['r2'] = {
-            'scores': r2_scores.tolist(),
-            'mean': r2_scores.mean(),
-            'std': r2_scores.std()
-        }
+        # R-squared
+        r2_scores = cross_val_score(self.model, X_train, y_train, cv=tscv, scoring='r2')
+        cv_results['r2'] = r2_scores
+        cv_results['r2_mean'] = r2_scores.mean()
+        cv_results['r2_std'] = r2_scores.std()
         
-        logger.info(f"CV MAE: {cv_scores['mae']['mean']:.4f} (+/- {cv_scores['mae']['std'] * 2:.4f})")
-        logger.info(f"CV RMSE: {cv_scores['rmse']['mean']:.4f} (+/- {cv_scores['rmse']['std'] * 2:.4f})")
-        logger.info(f"CV R²: {cv_scores['r2']['mean']:.4f} (+/- {cv_scores['r2']['std'] * 2:.4f})")
-        
-        return cv_scores
+        return cv_results
     
     def _evaluate_model(self, X: pd.DataFrame, y: pd.Series, dataset_name: str) -> Dict:
         """
-        Evaluate the model on a dataset.
+        Evaluate model performance on a specific dataset.
         
         Args:
             X: Features
             y: Targets
-            dataset_name: Name of the dataset
+            dataset_name: Name of the dataset for logging
             
         Returns:
             Dictionary with evaluation metrics
@@ -255,14 +279,16 @@ class ModelTrainer:
         
         # Calculate metrics
         mae = mean_absolute_error(y, y_pred)
-        rmse = np.sqrt(mean_squared_error(y, y_pred))
+        mse = mean_squared_error(y, y_pred)
+        rmse = np.sqrt(mse)
         r2 = r2_score(y, y_pred)
         
-        # Calculate percentage error
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
+        # Calculate additional metrics
+        mape = np.mean(np.abs((y - y_pred) / y)) * 100  # Mean Absolute Percentage Error
         
-        metrics = {
+        results = {
             'mae': mae,
+            'mse': mse,
             'rmse': rmse,
             'r2': r2,
             'mape': mape,
@@ -270,13 +296,9 @@ class ModelTrainer:
             'actuals': y.tolist()
         }
         
-        logger.info(f"{dataset_name.title()} Metrics:")
-        logger.info(f"  MAE: {mae:.4f}")
-        logger.info(f"  RMSE: {rmse:.4f}")
-        logger.info(f"  R²: {r2:.4f}")
-        logger.info(f"  MAPE: {mape:.2f}%")
+        logger.info(f"{dataset_name.capitalize()} metrics - MAE: {mae:.2f}, RMSE: {rmse:.2f}, R²: {r2:.3f}")
         
-        return metrics
+        return results
     
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """
@@ -286,7 +308,7 @@ class ModelTrainer:
             X: Features for prediction
             
         Returns:
-            Predictions
+            Predicted values
         """
         if self.model is None:
             raise ValueError("Model must be trained before making predictions")
@@ -298,16 +320,24 @@ class ModelTrainer:
         Get feature importance from the trained model.
         
         Returns:
-            Dataframe with feature importance
+            Dataframe with feature importance scores
         """
-        if self.feature_importance is None:
-            raise ValueError("Model must be trained to get feature importance")
-        
-        return self.feature_importance
+        if self.feature_importance is not None:
+            return self.feature_importance.copy()
+        else:
+            logger.warning("Feature importance not available. Train the model first.")
+            return pd.DataFrame()
+
+# =============================================================================
+# MODEL EVALUATOR CLASS
+# =============================================================================
 
 class ModelEvaluator:
     """
-    Model evaluator for comprehensive model assessment.
+    Model evaluator for comprehensive performance assessment.
+    
+    This class provides detailed evaluation of model performance across
+    multiple datasets (train, validation, test) with comprehensive metrics.
     """
     
     def __init__(self, model_trainer: ModelTrainer):
@@ -328,7 +358,7 @@ class ModelEvaluator:
                       X_test: pd.DataFrame, 
                       y_test: pd.Series) -> Dict:
         """
-        Comprehensive model evaluation on all datasets.
+        Evaluate model performance on all datasets.
         
         Args:
             X_train: Training features
@@ -348,77 +378,94 @@ class ModelEvaluator:
         self.evaluation_results['validation'] = self.model_trainer._evaluate_model(X_val, y_val, 'validation')
         self.evaluation_results['test'] = self.model_trainer._evaluate_model(X_test, y_test, 'test')
         
-        # Add cross-validation results
-        self.evaluation_results['cross_validation'] = self.model_trainer.cv_scores
+        # Create prediction comparisons
+        self.evaluation_results['train_comparison'] = self._create_prediction_comparison(X_train, y_train)
+        self.evaluation_results['validation_comparison'] = self._create_prediction_comparison(X_val, y_val)
+        self.evaluation_results['test_comparison'] = self._create_prediction_comparison(X_test, y_test)
         
-        # Create detailed comparison
-        comparison_df = self._create_prediction_comparison(X_test, y_test)
-        self.evaluation_results['detailed_comparison'] = comparison_df.to_dict('records')
+        # Calculate performance summary
+        self.evaluation_results['summary'] = self._create_performance_summary()
         
-        # Add feature importance
-        if self.model_trainer.feature_importance is not None:
-            self.evaluation_results['feature_importance'] = self.model_trainer.feature_importance.to_dict('records')
-        
-        logger.info("Model evaluation complete")
+        logger.info("Model evaluation completed")
         return self.evaluation_results
     
     def _create_prediction_comparison(self, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
         """
-        Create detailed prediction comparison.
+        Create a comparison dataframe of actual vs predicted values.
         
         Args:
             X: Features
             y: Actual targets
             
         Returns:
-            Dataframe with prediction comparison
+            Dataframe with actual and predicted values
         """
         y_pred = self.model_trainer.predict(X)
         
         comparison_df = pd.DataFrame({
             'actual': y,
             'predicted': y_pred,
-            'absolute_error': np.abs(y - y_pred),
-            'percentage_error': np.abs((y - y_pred) / y) * 100
+            'error': y - y_pred,
+            'abs_error': np.abs(y - y_pred),
+            'pct_error': np.abs((y - y_pred) / y) * 100
         })
         
         return comparison_df
     
+    def _create_performance_summary(self) -> Dict:
+        """
+        Create a summary of model performance across all datasets.
+        
+        Returns:
+            Dictionary with performance summary
+        """
+        summary = {}
+        
+        for dataset_name, results in self.evaluation_results.items():
+            if dataset_name not in ['summary', 'train_comparison', 'validation_comparison', 'test_comparison']:
+                summary[dataset_name] = {
+                    'mae': results['mae'],
+                    'rmse': results['rmse'],
+                    'r2': results['r2'],
+                    'mape': results['mape']
+                }
+        
+        return summary
+    
     def print_evaluation_summary(self):
-        """Print a comprehensive evaluation summary."""
+        """Print a formatted evaluation summary to console."""
         print("\n" + "="*60)
         print("MODEL EVALUATION SUMMARY")
         print("="*60)
         
         # Print metrics for each dataset
-        for dataset, metrics in self.evaluation_results.items():
-            if dataset in ['train', 'validation', 'test']:
-                print(f"\n{dataset.upper()} SET:")
-                print(f"  MAE: ${metrics['mae']:,.2f}")
-                print(f"  RMSE: ${metrics['rmse']:,.2f}")
-                print(f"  R²: {metrics['r2']:.4f}")
-                print(f"  MAPE: {metrics['mape']:.2f}%")
+        for dataset_name, results in self.evaluation_results['summary'].items():
+            print(f"\n{dataset_name.upper()} SET:")
+            print(f"  MAE:  {results['mae']:.2f}")
+            print(f"  RMSE: {results['rmse']:.2f}")
+            print(f"  R²:   {results['r2']:.3f}")
+            print(f"  MAPE: {results['mape']:.2f}%")
         
-        # Print cross-validation results
-        if 'cross_validation' in self.evaluation_results:
-            cv = self.evaluation_results['cross_validation']
-            print(f"\nCROSS-VALIDATION:")
-            print(f"  MAE: {cv['mae']['mean']:.4f} (+/- {cv['mae']['std'] * 2:.4f})")
-            print(f"  RMSE: {cv['rmse']['mean']:.4f} (+/- {cv['rmse']['std'] * 2:.4f})")
-            print(f"  R²: {cv['r2']['mean']:.4f} (+/- {cv['r2']['std'] * 2:.4f})")
-        
-        # Print top features
-        if 'feature_importance' in self.evaluation_results:
-            print(f"\nTOP 10 FEATURES:")
-            top_features = self.evaluation_results['feature_importance'][:10]
-            for i, feature in enumerate(top_features, 1):
-                print(f"  {i:2d}. {feature['feature']}: {feature['importance']:.4f}")
+        # Print feature importance (top 10)
+        feature_importance = self.model_trainer.get_feature_importance()
+        if not feature_importance.empty:
+            print(f"\nTOP 10 FEATURE IMPORTANCE:")
+            top_features = feature_importance.head(10)
+            for _, row in top_features.iterrows():
+                print(f"  {row['feature']}: {row['importance']:.4f}")
         
         print("="*60)
 
+# =============================================================================
+# MODEL PERSISTENCE CLASS
+# =============================================================================
+
 class ModelPersistence:
     """
-    Model persistence utilities for saving and loading models.
+    Model persistence utilities for saving and loading trained models.
+    
+    This class handles model serialization, metadata storage, and model loading
+    with comprehensive error handling and validation.
     """
     
     @staticmethod
@@ -426,74 +473,86 @@ class ModelPersistence:
                   evaluation_results: Dict,
                   model_path: str = None) -> str:
         """
-        Save the trained model and metadata.
+        Save the trained model and associated metadata.
         
         Args:
-            model_trainer: Trained model trainer
-            evaluation_results: Evaluation results
-            model_path: Path to save the model
+            model_trainer: Trained model trainer instance
+            evaluation_results: Model evaluation results
+            model_path: Path to save the model (optional)
             
         Returns:
-            Path where model was saved
+            Path where the model was saved
         """
+        if model_trainer.model is None:
+            raise ValueError("No trained model to save")
+        
+        # Create model directory
         if model_path is None:
             model_path = MODEL_ARTIFACTS_PATH / MODEL_VERSION
+        else:
+            model_path = Path(model_path)
         
-        # Create directory if it doesn't exist
         model_path.mkdir(parents=True, exist_ok=True)
         
-        # Save the model
-        model_file = model_path / f"{MODEL_NAME}.pkl"
+        # Save model
+        model_file = model_path / "model.joblib"
         joblib.dump(model_trainer.model, model_file)
+        logger.info(f"Model saved to: {model_file}")
         
-        # Save evaluation results
-        eval_file = model_path / "evaluation_results.json"
-        with open(eval_file, 'w') as f:
-            json.dump(evaluation_results, f, indent=2, default=str)
+        # Save metadata
+        metadata = {
+            'model_type': model_trainer.model_type,
+            'model_params': model_trainer.model.get_params(),
+            'best_params': model_trainer.best_params,
+            'cv_scores': model_trainer.cv_scores,
+            'evaluation_results': evaluation_results,
+            'feature_importance': model_trainer.feature_importance.to_dict('records') if model_trainer.feature_importance is not None else None,
+            'model_version': MODEL_VERSION,
+            'save_timestamp': pd.Timestamp.now().isoformat()
+        }
         
-        # Save feature importance
+        metadata_file = model_path / "metadata.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2, default=str)
+        logger.info(f"Metadata saved to: {metadata_file}")
+        
+        # Save feature importance separately
         if model_trainer.feature_importance is not None:
             importance_file = model_path / "feature_importance.csv"
             model_trainer.feature_importance.to_csv(importance_file, index=False)
+            logger.info(f"Feature importance saved to: {importance_file}")
         
-        # Save model metadata
-        metadata = {
-            'model_name': MODEL_NAME,
-            'model_version': MODEL_VERSION,
-            'model_type': model_trainer.model_type,
-            'model_params': model_trainer.model.get_params(),
-            'training_date': pd.Timestamp.now().isoformat(),
-            'feature_count': len(model_trainer.feature_importance) if model_trainer.feature_importance is not None else 0
-        }
-        
-        metadata_file = model_path / "model_metadata.json"
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2, default=str)
-        
-        logger.info(f"Model saved to: {model_path}")
         return str(model_path)
     
     @staticmethod
     def load_model(model_path: str) -> Tuple[RandomForestRegressor, Dict]:
         """
-        Load a saved model and metadata.
+        Load a trained model and its metadata.
         
         Args:
             model_path: Path to the saved model
             
         Returns:
-            Tuple of (model, metadata)
+            Tuple of (loaded model, metadata)
         """
         model_path = Path(model_path)
         
-        # Load the model
-        model_file = model_path / f"{MODEL_NAME}.pkl"
+        # Load model
+        model_file = model_path / "model.joblib"
+        if not model_file.exists():
+            raise FileNotFoundError(f"Model file not found: {model_file}")
+        
         model = joblib.load(model_file)
+        logger.info(f"Model loaded from: {model_file}")
         
         # Load metadata
-        metadata_file = model_path / "model_metadata.json"
-        with open(metadata_file, 'r') as f:
-            metadata = json.load(f)
+        metadata_file = model_path / "metadata.json"
+        if metadata_file.exists():
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+            logger.info(f"Metadata loaded from: {metadata_file}")
+        else:
+            metadata = {}
+            logger.warning(f"Metadata file not found: {metadata_file}")
         
-        logger.info(f"Model loaded from: {model_path}")
         return model, metadata 

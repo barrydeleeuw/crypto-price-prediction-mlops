@@ -1,6 +1,12 @@
 """
 Data processing pipeline for cryptocurrency price prediction.
-Handles data loading, validation, preprocessing, and splitting.
+
+This module provides a comprehensive data processing pipeline including:
+- Data loading from Kaggle datasets
+- Data validation and cleaning
+- Feature engineering and preprocessing
+- Time series data splitting
+- Pipeline orchestration
 """
 
 import pandas as pd
@@ -23,18 +29,28 @@ from ..utils.config import (
 from ..utils.data_validation import DataValidator, clean_dataframe
 from .features import FeatureEngineer
 
+# Configure logging
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# DATA LOADER CLASS
+# =============================================================================
+
 class DataLoader:
-    """Data loader for cryptocurrency price data from Kaggle."""
+    """
+    Data loader for cryptocurrency price data from Kaggle.
+    
+    This class handles downloading and loading cryptocurrency datasets from Kaggle,
+    with built-in error handling and logging.
+    """
     
     def __init__(self, dataset_name: str = None, crypto_file: str = None):
         """
         Initialize the data loader.
         
         Args:
-            dataset_name: Kaggle dataset name
-            crypto_file: Specific crypto file to load
+            dataset_name: Kaggle dataset name (e.g., 'sudalairajkumar/cryptocurrencypricehistory')
+            crypto_file: Specific crypto file to load (e.g., 'coin_Bitcoin.csv')
         """
         self.dataset_name = dataset_name or KAGGLE_DATASET
         self.crypto_file = crypto_file or CRYPTO_FILE
@@ -44,8 +60,14 @@ class DataLoader:
         """
         Load cryptocurrency data from Kaggle.
         
+        Downloads the dataset from Kaggle and loads the specified cryptocurrency file.
+        
         Returns:
-            Loaded dataframe
+            Loaded dataframe with cryptocurrency price data
+            
+        Raises:
+            FileNotFoundError: If the specified crypto file is not found
+            Exception: For other loading errors
         """
         logger.info(f"Loading data from Kaggle dataset: {self.dataset_name}")
         
@@ -54,11 +76,11 @@ class DataLoader:
             dataset_path = kagglehub.dataset_download(self.dataset_name)
             logger.info(f"Dataset downloaded to: {dataset_path}")
             
-            # List available files
+            # List available files in the dataset
             files = os.listdir(dataset_path)
             logger.info(f"Available files: {files}")
             
-            # Check if target file exists
+            # Verify target file exists
             if self.crypto_file not in files:
                 raise FileNotFoundError(f"File {self.crypto_file} not found in dataset")
             
@@ -80,35 +102,41 @@ class DataLoader:
         """
         Validate and clean the loaded data.
         
+        Performs comprehensive data validation and applies cleaning operations
+        to ensure data quality for machine learning.
+        
         Args:
-            df: Raw dataframe
+            df: Raw dataframe from Kaggle
             
         Returns:
-            Cleaned and validated dataframe
+            Cleaned and validated dataframe ready for processing
         """
         logger.info("Starting data validation and cleaning")
         
-        # Validate data
+        # Perform comprehensive validation
         validation_results = self.validator.validate_dataframe(df)
         self.validator.print_validation_report()
         
+        # Proceed with cleaning even if validation fails (with warning)
         if not validation_results.get('overall_valid', False):
             logger.warning("Data validation failed, but proceeding with cleaning")
         
-        # Clean data
+        # Apply data cleaning operations
         df_clean = clean_dataframe(df)
         
-        # Save cleaned data
-        output_path = PROCESSED_DATA_PATH / f"cleaned_{self.crypto_file}"
-        df_clean.to_csv(output_path, index=False)
-        logger.info(f"Cleaned data saved to: {output_path}")
-        
+        logger.info(f"Data cleaning complete. Final shape: {df_clean.shape}")
         return df_clean
+
+# =============================================================================
+# DATA PREPROCESSOR CLASS
+# =============================================================================
 
 class DataPreprocessor(BaseEstimator, TransformerMixin):
     """
-    Data preprocessing pipeline for cryptocurrency price data.
-    Handles data type conversion, missing value imputation, and scaling.
+    Data preprocessor for machine learning pipeline.
+    
+    This transformer handles data type conversion, missing value imputation,
+    and feature scaling for the machine learning pipeline.
     """
     
     def __init__(self, scale_features: bool = True):
@@ -116,10 +144,10 @@ class DataPreprocessor(BaseEstimator, TransformerMixin):
         Initialize the preprocessor.
         
         Args:
-            scale_features: Whether to scale numerical features
+            scale_features: Whether to scale numeric features
         """
         self.scale_features = scale_features
-        self.preprocessor = None
+        self.preprocessing_pipeline = None
         self.feature_names_ = []
     
     def fit(self, X, y=None):
@@ -127,128 +155,143 @@ class DataPreprocessor(BaseEstimator, TransformerMixin):
         Fit the preprocessor on the training data.
         
         Args:
-            X: Training features
-            y: Target variable (unused)
+            X: Training data
+            y: Target values (not used)
             
         Returns:
-            Self
+            self: The fitted preprocessor
         """
         logger.info("Fitting data preprocessor")
         
         # Prepare data for preprocessing
-        X_processed = self._prepare_for_preprocessing(X)
+        X_prepared = self._prepare_for_preprocessing(X)
         
-        # Create preprocessing pipeline
-        self.preprocessor = self._create_preprocessing_pipeline(X_processed)
-        
-        # Fit the preprocessor
-        self.preprocessor.fit(X_processed)
+        # Create and fit preprocessing pipeline
+        self.preprocessing_pipeline = self._create_preprocessing_pipeline(X_prepared)
+        self.preprocessing_pipeline.fit(X_prepared)
         
         # Store feature names
-        self.feature_names_ = X_processed.columns.tolist()
+        self.feature_names_ = list(X_prepared.columns)
         
         logger.info(f"Preprocessor fitted with {len(self.feature_names_)} features")
         return self
     
     def transform(self, X):
         """
-        Transform the input data.
+        Transform the input data using the fitted preprocessor.
         
         Args:
-            X: Input features
+            X: Input data to transform
             
         Returns:
-            Transformed features
+            Transformed data
         """
-        logger.info("Transforming data")
+        if self.preprocessing_pipeline is None:
+            raise ValueError("Preprocessor must be fitted before transform")
         
-        if self.preprocessor is None:
-            raise ValueError("Preprocessor must be fitted before transforming")
+        # Prepare data for transformation
+        X_prepared = self._prepare_for_preprocessing(X)
         
-        # Prepare data for preprocessing
-        X_processed = self._prepare_for_preprocessing(X)
+        # Apply preprocessing pipeline
+        X_transformed = self.preprocessing_pipeline.transform(X_prepared)
         
-        # Transform data
-        X_transformed = self.preprocessor.transform(X_processed)
-        
-        # Convert back to dataframe
+        # Convert back to dataframe with feature names
         if hasattr(X_transformed, 'toarray'):
             X_transformed = X_transformed.toarray()
         
-        result_df = pd.DataFrame(X_transformed, columns=self.feature_names_)
+        result_df = pd.DataFrame(X_transformed, columns=self.feature_names_, index=X.index)
         
         logger.info(f"Data transformation complete. Shape: {result_df.shape}")
         return result_df
     
     def _prepare_for_preprocessing(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Prepare data for preprocessing by handling data types."""
-        X_processed = X.copy()
+        """
+        Prepare data for preprocessing by converting types and handling missing values.
         
-        # Convert datetime columns to numeric features
-        datetime_columns = X_processed.select_dtypes(include=['datetime64']).columns
-        for col in datetime_columns:
-            X_processed[f'{col}_year'] = X_processed[col].dt.year
-            X_processed[f'{col}_month'] = X_processed[col].dt.month
-            X_processed[f'{col}_day'] = X_processed[col].dt.day
-            X_processed[f'{col}_dayofweek'] = X_processed[col].dt.dayofweek
-            X_processed = X_processed.drop(col, axis=1)
+        Args:
+            X: Input dataframe
+            
+        Returns:
+            Prepared dataframe ready for preprocessing
+        """
+        df = X.copy()
+        
+        # Convert date columns to numeric (days since epoch)
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df['Date'] = (df['Date'] - pd.Timestamp('1970-01-01')).dt.days
         
         # Convert categorical columns to numeric
-        categorical_columns = X_processed.select_dtypes(include=['object', 'string']).columns
+        categorical_columns = ['Name', 'Symbol']
         for col in categorical_columns:
-            X_processed[col] = pd.Categorical(X_processed[col]).codes
+            if col in df.columns:
+                df[col] = pd.Categorical(df[col]).codes
         
         # Ensure all columns are numeric
-        numeric_columns = X_processed.select_dtypes(include=[np.number]).columns
-        X_processed = X_processed[numeric_columns]
+        df = df.select_dtypes(include=[np.number])
         
-        return X_processed
+        return df
     
     def _create_preprocessing_pipeline(self, X: pd.DataFrame) -> Pipeline:
-        """Create the preprocessing pipeline."""
-        # Define numeric features
-        numeric_features = X.select_dtypes(include=[np.number]).columns.tolist()
+        """
+        Create a preprocessing pipeline for the data.
         
-        # Create numeric transformer
-        numeric_transformer = Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', StandardScaler() if self.scale_features else 'passthrough')
-        ])
+        Args:
+            X: Input dataframe
+            
+        Returns:
+            Fitted preprocessing pipeline
+        """
+        # Define preprocessing steps
+        preprocessing_steps = []
         
-        # Create column transformer
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ('num', numeric_transformer, numeric_features)
-            ],
-            remainder='drop'
-        )
+        # Add imputation step
+        imputer = SimpleImputer(strategy='median')
+        preprocessing_steps.append(('imputer', imputer))
         
-        return preprocessor
+        # Add scaling step if requested
+        if self.scale_features:
+            scaler = StandardScaler()
+            preprocessing_steps.append(('scaler', scaler))
+        
+        # Create pipeline
+        pipeline = Pipeline(preprocessing_steps)
+        
+        return pipeline
+
+# =============================================================================
+# DATA SPLITTER CLASS
+# =============================================================================
 
 class DataSplitter:
-    """Data splitter for time series data."""
+    """
+    Time series data splitter for cryptocurrency price prediction.
+    
+    This class handles temporal data splitting while preserving the time order,
+    which is crucial for time series prediction tasks.
+    """
     
     def __init__(self, train_split: float = None, val_split: float = None, test_split: float = None):
         """
         Initialize the data splitter.
         
         Args:
-            train_split: Training set proportion
-            val_split: Validation set proportion
-            test_split: Test set proportion
+            train_split: Proportion of data for training
+            val_split: Proportion of data for validation
+            test_split: Proportion of data for testing
         """
         self.train_split = train_split or TRAIN_SPLIT
         self.val_split = val_split or VAL_SPLIT
         self.test_split = test_split or TEST_SPLIT
         
         # Validate splits
-        total = self.train_split + self.val_split + self.test_split
-        if abs(total - 1.0) > 0.01:
-            raise ValueError(f"Data splits must sum to 1.0, got {total}")
+        total_split = self.train_split + self.val_split + self.test_split
+        if abs(total_split - 1.0) > 0.01:
+            raise ValueError(f"Data splits must sum to 1.0, got {total_split}")
     
     def split_data(self, df: pd.DataFrame, target_column: str = 'Close') -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         """
-        Split data into train, validation, and test sets respecting temporal order.
+        Split data into train, validation, and test sets while preserving temporal order.
         
         Args:
             df: Input dataframe
@@ -259,41 +302,52 @@ class DataSplitter:
         """
         logger.info("Splitting data into train/validation/test sets")
         
-        # Sort by date to maintain temporal order
+        # Ensure data is sorted by date
         if 'Date' in df.columns:
-            df_sorted = df.sort_values('Date').reset_index(drop=True)
-        else:
-            df_sorted = df.copy()
+            df = df.sort_values('Date').reset_index(drop=True)
         
         # Calculate split indices
-        n_samples = len(df_sorted)
-        train_end = int(n_samples * self.train_split)
-        val_end = train_end + int(n_samples * self.val_split)
+        total_rows = len(df)
+        train_end = int(total_rows * self.train_split)
+        val_end = int(total_rows * (self.train_split + self.val_split))
         
         # Split the data
-        train_df = df_sorted[:train_end]
-        val_df = df_sorted[train_end:val_end]
-        test_df = df_sorted[val_end:]
+        train_data = df.iloc[:train_end]
+        val_data = df.iloc[train_end:val_end]
+        test_data = df.iloc[val_end:]
         
         # Separate features and target
-        X_train = train_df.drop(target_column, axis=1)
-        y_train = train_df[target_column]
-        X_val = val_df.drop(target_column, axis=1)
-        y_val = val_df[target_column]
-        X_test = test_df.drop(target_column, axis=1)
-        y_test = test_df[target_column]
+        X_train = train_data.drop(columns=[target_column])
+        y_train = train_data[target_column]
         
+        X_val = val_data.drop(columns=[target_column])
+        y_val = val_data[target_column]
+        
+        X_test = test_data.drop(columns=[target_column])
+        y_test = test_data[target_column]
+        
+        # Log split information
         logger.info(f"Data split complete:")
-        logger.info(f"  Train set: {len(X_train)} samples")
-        logger.info(f"  Validation set: {len(X_val)} samples")
-        logger.info(f"  Test set: {len(X_test)} samples")
+        logger.info(f"  Train: {len(X_train)} samples ({len(X_train)/total_rows:.1%})")
+        logger.info(f"  Validation: {len(X_val)} samples ({len(X_val)/total_rows:.1%})")
+        logger.info(f"  Test: {len(X_test)} samples ({len(X_test)/total_rows:.1%})")
         
         return X_train, y_train, X_val, y_val, X_test, y_test
 
+# =============================================================================
+# DATA PIPELINE CLASS
+# =============================================================================
+
 class DataPipeline:
     """
-    Complete data processing pipeline.
-    Combines loading, validation, feature engineering, and preprocessing.
+    Complete data processing pipeline for cryptocurrency price prediction.
+    
+    This class orchestrates the entire data processing workflow:
+    1. Data loading from Kaggle
+    2. Data validation and cleaning
+    3. Feature engineering
+    4. Data preprocessing
+    5. Time series splitting
     """
     
     def __init__(self, 
@@ -310,96 +364,129 @@ class DataPipeline:
             add_technical_indicators: Whether to add technical indicators
             scale_features: Whether to scale features
         """
-        self.loader = DataLoader(dataset_name, crypto_file)
+        self.data_loader = DataLoader(dataset_name, crypto_file)
         self.feature_engineer = FeatureEngineer(add_technical_indicators=add_technical_indicators)
         self.preprocessor = DataPreprocessor(scale_features=scale_features)
-        self.splitter = DataSplitter()
+        self.data_splitter = DataSplitter()
         
+        # Store processed data
         self.X_train = None
         self.y_train = None
         self.X_val = None
         self.y_val = None
         self.X_test = None
         self.y_test = None
-        self.feature_names = None
+        self.feature_names = []
     
     def run_pipeline(self, target_column: str = 'Close') -> Dict:
         """
         Run the complete data processing pipeline.
         
         Args:
-            target_column: Name of the target column
+            target_column: Name of the target column for prediction
             
         Returns:
-            Dictionary with processed data and metadata
+            Dictionary with pipeline summary information
         """
         logger.info("Starting complete data processing pipeline")
         
-        # Step 1: Load and validate data
-        logger.info("Step 1: Loading and validating data")
-        raw_data = self.loader.load_data()
-        clean_data = self.loader.validate_and_clean(raw_data)
+        # =====================================================================
+        # STEP 1: LOAD AND VALIDATE DATA
+        # =====================================================================
         
-        # Step 2: Feature engineering
+        logger.info("Step 1: Loading and validating data")
+        raw_data = self.data_loader.load_data()
+        clean_data = self.data_loader.validate_and_clean(raw_data)
+        
+        # =====================================================================
+        # STEP 2: FEATURE ENGINEERING
+        # =====================================================================
+        
         logger.info("Step 2: Feature engineering")
         engineered_data = self.feature_engineer.transform(clean_data)
         
-        # Step 3: Split data
+        # =====================================================================
+        # STEP 3: DATA SPLITTING
+        # =====================================================================
+        
         logger.info("Step 3: Splitting data")
         self.X_train, self.y_train, self.X_val, self.y_val, self.X_test, self.y_test = \
-            self.splitter.split_data(engineered_data, target_column)
+            self.data_splitter.split_data(engineered_data, target_column)
         
-        # Step 4: Preprocessing
-        logger.info("Step 4: Preprocessing")
+        # =====================================================================
+        # STEP 4: DATA PREPROCESSING
+        # =====================================================================
+        
+        logger.info("Step 4: Preprocessing data")
         self.preprocessor.fit(self.X_train)
-        self.X_train_processed = self.preprocessor.transform(self.X_train)
-        self.X_val_processed = self.preprocessor.transform(self.X_val)
-        self.X_test_processed = self.preprocessor.transform(self.X_test)
+        
+        self.X_train = self.preprocessor.transform(self.X_train)
+        self.X_val = self.preprocessor.transform(self.X_val)
+        self.X_test = self.preprocessor.transform(self.X_test)
         
         # Store feature names
-        self.feature_names = self.preprocessor.feature_names_
+        self.feature_names = list(self.X_train.columns)
         
-        # Create summary
+        # =====================================================================
+        # STEP 5: CREATE SUMMARY
+        # =====================================================================
+        
+        logger.info("Step 5: Creating pipeline summary")
         summary = self._create_pipeline_summary(engineered_data)
         
-        logger.info("Data processing pipeline complete")
+        logger.info("Data processing pipeline completed successfully")
         return summary
     
     def _create_pipeline_summary(self, engineered_data: pd.DataFrame) -> Dict:
-        """Create a summary of the pipeline results."""
-        from .features import create_feature_summary
+        """
+        Create a comprehensive summary of the data processing pipeline.
         
-        feature_summary = create_feature_summary(engineered_data)
-        
+        Args:
+            engineered_data: Data after feature engineering
+            
+        Returns:
+            Dictionary with pipeline summary information
+        """
         summary = {
+            'pipeline_steps': {
+                'data_loading': 'Completed',
+                'data_validation': 'Completed',
+                'feature_engineering': 'Completed',
+                'data_splitting': 'Completed',
+                'data_preprocessing': 'Completed'
+            },
             'data_info': {
                 'original_shape': len(engineered_data),
+                'final_features': len(self.feature_names),
                 'train_samples': len(self.X_train),
-                'val_samples': len(self.X_val),
-                'test_samples': len(self.X_test),
-                'total_features': len(self.feature_names)
+                'validation_samples': len(self.X_val),
+                'test_samples': len(self.X_test)
             },
-            'feature_summary': feature_summary,
-            'target_info': {
-                'train_mean': self.y_train.mean(),
-                'train_std': self.y_train.std(),
-                'val_mean': self.y_val.mean(),
-                'val_std': self.y_val.std(),
-                'test_mean': self.y_test.mean(),
-                'test_std': self.y_test.std()
+            'feature_info': {
+                'total_features': len(self.feature_names),
+                'feature_names': self.feature_names[:10] + ['...'] if len(self.feature_names) > 10 else self.feature_names
             }
         }
         
         return summary
     
     def get_processed_data(self) -> Tuple:
-        """Get the processed data for training."""
-        return (
-            self.X_train_processed, self.y_train,
-            self.X_val_processed, self.y_val,
-            self.X_test_processed, self.y_test
-        )
+        """
+        Get the processed data for model training.
+        
+        Returns:
+            Tuple of (X_train, y_train, X_val, y_val, X_test, y_test)
+        """
+        if self.X_train is None:
+            raise ValueError("Pipeline must be run before getting processed data")
+        
+        return self.X_train, self.y_train, self.X_val, self.y_val, self.X_test, self.y_test
     
     def get_feature_names(self) -> List[str]:
-        """Get the feature names."""
-        return self.feature_names 
+        """
+        Get the list of feature names.
+        
+        Returns:
+            List of feature names
+        """
+        return self.feature_names.copy() 
