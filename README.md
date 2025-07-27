@@ -203,4 +203,4 @@ The pipeline uses the [Cryptocurrency Price History](https://www.kaggle.com/data
 * [Kaggle Cryptocurrency Dataset](https://www.kaggle.com/datasets/sudalairajkumar/cryptocurrencypricehistory)
 * [MLflow](https://mlflow.org/) for experiment tracking
 * [FastAPI](https://fastapi.tiangolo.com/) for API development
-* [scikit-learn](https://scikit-learn.org/) for ML algorithms 
+* [scikit-learn](https://scikit-learn.org/) for ML algorithms
